@@ -17,6 +17,7 @@ namespace HydroponicsExpanded {
         private int _capacity = 4; // Modified by CapacityExtension DefModExtension
         private float _highestGrowth = 0f;
         private CompPowerTrader _compPowerTrader;
+        private ThingOwner _fullyGrownContainer; // Set to the plants that successfully grew once the harvesting stage is transitioned to, compat for stuff like RimBees.
 
         private HydroponicsStage _stage = HydroponicsStage.Sowing;
 
@@ -41,6 +42,7 @@ namespace HydroponicsExpanded {
 
         public BuildingDenseHydroponicsBasin() {
             _innerContainer = new ThingOwner<Thing>(this, false);
+            _fullyGrownContainer = new ThingOwner<Thing>(this, false);
         }
 
         IEnumerable<IntVec3> IPlantToGrowSettable.Cells {
@@ -124,8 +126,17 @@ namespace HydroponicsExpanded {
 
             // When growth is complete, move to the harvesting stage.
             // This is ran even if growing is not available as debug gizmo can push growth to 'mature' stage outside normal growing times.
-            if (growthTrackingPlant.LifeStage == PlantLifeStage.Mature)
+            if (growthTrackingPlant.LifeStage == PlantLifeStage.Mature) {
+                if (_fullyGrownContainer == null) { // handle mod updates where this isn't defined
+                    _fullyGrownContainer = new ThingOwner<Thing>(this, false);
+                }
+                while (_innerContainer.Count > 0) {
+                    var maturePlant = (Plant)_innerContainer[0];
+                    _innerContainer.Remove(maturePlant);
+                    _fullyGrownContainer.TryAdd(maturePlant);
+                }
                 Stage = HydroponicsStage.Harvest;
+            }
         }
 
         /// <summary>
@@ -139,7 +150,7 @@ namespace HydroponicsExpanded {
 
         private void HarvestTick() {
             // Try to place every plant in the container in any cell.
-            foreach (Thing nextInnerThing in _innerContainer) {
+            foreach (Thing nextInnerThing in _fullyGrownContainer) {
                 var nextPlant = (Plant)nextInnerThing;
 
                 int occupiedCells = 0;
@@ -162,19 +173,44 @@ namespace HydroponicsExpanded {
                     break;
             }
 
+            bool capacityReached = _innerContainer.Count >= _capacity;
+            
             // Re-harvestable plants will be destroyed if we think they've been harvested recently.
             foreach (Plant plant in PlantsOnMe) {
+                var minGrowth = plant.def.plant.harvestAfterGrowth;
+                // copy of initial sowing code, but with a small modification: this will only run if the plant is less than a certain growth percentage
+                // this also has the added effect of allowing plants which have multiple harvests to remain existing.
+                // TODO: Kill plants which are different than the setting the player set, so that even with RimBees active, the plants will not interfere with the new plants.
+                if (plant.Growth < minGrowth){
+                    // Blighted plants will be destroyed and not added to the internal container.
+                    // Once capacity is reached, all plants will be ignored.
+                    if (capacityReached || plant.Blighted) {
+                        plant.Destroy();
+                        continue;
+                    }
+
+                    // This is where the TODO should go for checking if a plant's different from the player's selected plant. I'm not an expert with this yet so wait for further help.
+    
+                    // When plants are being sown, they are invisible, but we want to wait until they are sown before adding them to the internal container.
+                    // When plants are harvested, they are placed on top, but we don't want to take those. Therefore, we only want 'Growing' stage plants.
+                    if (plant.LifeStage != PlantLifeStage.Growing)
+                        continue;
+
+                    // Otherwise, we move the plant underground.
+                    plant.DeSpawn();
+                    TryAcceptThing(plant);
+                }
+
                 if (plant.def.plant.HarvestDestroys) continue;
 
                 // Only consider re-harvestable plants eligible if they're still within 20% of their harvest growth level,
                 // up to 90%. This may need tuning if there are harvestable plants that go to 90% growth.
-                var minGrowth = plant.def.plant.harvestAfterGrowth;
                 if (plant.Growth.Between(minGrowth, Math.Min(0.9f, minGrowth + 0.2f), inclusive: true))
                     plant.Destroy();
             }
 
             // All plants have been harvested. Switch back to sowing stage.
-            if (_innerContainer.Count == 0)
+            if (_fullyGrownContainer.Count == 0)
                 Stage = HydroponicsStage.Sowing;
         }
 
